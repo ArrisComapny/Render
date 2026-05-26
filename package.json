@@ -1,0 +1,13 @@
+{
+  "name": "wb-stagehand-wrapper",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@browserbasehq/stagehand": "^2.0.0",
+    "fastify": "^4.28.0",
+    "zod": "^3.23.0"
+  }
+}

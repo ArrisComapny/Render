@@ -17,11 +17,11 @@ fastify.addHook('onRequest', async (req, reply) => {
   }
 });
 
-// чистка старых сессий
+// чистка старых сессий каждые 5 минут
 setInterval(async () => {
   const now = Date.now();
   for (const [id, s] of SESSIONS) {
-    if (now - s.createdAt > 60 * 60 * 1000) {
+    if (now - s.createdAt > 13 * 60 * 1000) {
       try { await s.stagehand.close(); } catch {}
       try { await steel.sessions.release(s.steelSession.id); } catch {}
       SESSIONS.delete(id);
@@ -33,17 +33,15 @@ setInterval(async () => {
 fastify.post('/session/create', async (req) => {
   const { url, reuse_steel_session_id } = req.body;
 
-  // Создаём (или переиспользуем) Steel-сессию
+  fastify.log.info('VERSION: hobby-clean-v3');
+
   let steelSession;
   if (reuse_steel_session_id) {
     steelSession = await steel.sessions.retrieve(reuse_steel_session_id);
   } else {
+    // Минимальная конфигурация под hobby-план: без платных useProxy / solveCaptcha
     steelSession = await steel.sessions.create({
-//      useProxy: true,            // резидентный прокси
-//      solveCaptcha: true,        // авто-капча
-      // userAgent: '...',       // можно задать кастомный UA
-      // region: 'lhr',          // регион, если нужен ближе к РФ
-      timeout: 840000,          // 30 минут жизни сессии
+      timeout: 840000, // 14 минут (лимит hobby-плана — 15 мин)
     });
   }
 
@@ -118,6 +116,8 @@ fastify.post('/session/close', async (req) => {
   SESSIONS.delete(session_id);
   return { status: 'closed' };
 });
+
+// healthcheck без авторизации мешает hook'у — оставляем всё под токеном
 
 function buildZodFromJson(schemaJson) {
   const shape = {};

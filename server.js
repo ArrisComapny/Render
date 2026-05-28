@@ -43,7 +43,7 @@ fastify.post('/session/create', async (req) => {
       solveCaptcha: true,        // авто-капча
       // userAgent: '...',       // можно задать кастомный UA
       // region: 'lhr',          // регион, если нужен ближе к РФ
-      timeout: 1800000,          // 30 минут жизни сессии
+      timeout: 840000,          // 30 минут жизни сессии
     });
   }
 

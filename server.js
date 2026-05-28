@@ -52,7 +52,7 @@ fastify.post('/session/create', async (req) => {
       cdpUrl: `${steelSession.websocketUrl}&apiKey=${process.env.STEEL_API_KEY}`,
     },
     enableCaching: false,
-    modelName: 'claude-sonnet-4-5-20250929',
+    modelName: 'anthropic/claude-sonnet-4-6',
     modelClientOptions: { apiKey: process.env.ANTHROPIC_API_KEY },
   });
 

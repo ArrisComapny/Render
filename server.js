@@ -39,7 +39,6 @@ fastify.post('/session/create', async (req) => {
     steelSession = await steel.sessions.retrieve(reuse_steel_session_id);
   } else {
     steelSession = await steel.sessions.create({
-      useProxy: true,            // резидентный прокси
       solveCaptcha: true,        // авто-капча
       // userAgent: '...',       // можно задать кастомный UA
       // region: 'lhr',          // регион, если нужен ближе к РФ

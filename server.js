@@ -1,12 +1,15 @@
 import Fastify from 'fastify';
 import { Stagehand } from '@browserbasehq/stagehand';
+import Steel from 'steel-sdk';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
+import 'dotenv/config';
 
 const fastify = Fastify({ logger: true });
-const SESSIONS = new Map(); // session_id -> { stagehand, createdAt }
+const SESSIONS = new Map(); // session_id -> { stagehand, steelSession, createdAt }
 
-// Простая bearer-аутентификация
+const steel = new Steel({ steelAPIKey: process.env.STEEL_API_KEY });
+
 fastify.addHook('onRequest', async (req, reply) => {
   const expected = `Bearer ${process.env.WRAPPER_API_TOKEN}`;
   if (req.headers.authorization !== expected) {
@@ -14,12 +17,13 @@ fastify.addHook('onRequest', async (req, reply) => {
   }
 });
 
-// Чистим сессии старше 1 часа, чтобы Browserbase не копил счёт
+// чистка старых сессий
 setInterval(async () => {
   const now = Date.now();
   for (const [id, s] of SESSIONS) {
     if (now - s.createdAt > 60 * 60 * 1000) {
       try { await s.stagehand.close(); } catch {}
+      try { await steel.sessions.release(s.steelSession.id); } catch {}
       SESSIONS.delete(id);
     }
   }
@@ -27,70 +31,66 @@ setInterval(async () => {
 
 // --- 1. Создать сессию ---
 fastify.post('/session/create', async (req) => {
-  const { url, browserbase_session_id } = req.body;
-  // browserbase_session_id опционален — если передан, переиспользуем существующую сессию (cookies сохранены)
+  const { url, reuse_steel_session_id } = req.body;
 
+  // Создаём (или переиспользуем) Steel-сессию
+  let steelSession;
+  if (reuse_steel_session_id) {
+    steelSession = await steel.sessions.retrieve(reuse_steel_session_id);
+  } else {
+    steelSession = await steel.sessions.create({
+      useProxy: true,            // резидентный прокси
+      solveCaptcha: true,        // авто-капча
+      // userAgent: '...',       // можно задать кастомный UA
+      // region: 'lhr',          // регион, если нужен ближе к РФ
+      timeout: 1800000,          // 30 минут жизни сессии
+    });
+  }
+
+  // Подключаем Stagehand к Steel по CDP
   const stagehand = new Stagehand({
-    env: 'BROWSERBASE',
-    apiKey: process.env.BROWSERBASE_API_KEY,
-    projectId: process.env.BROWSERBASE_PROJECT_ID,
-    modelName: 'claude-sonnet-4-5-20250929', // или 'gpt-4o' если предпочитаете OpenAI
-    modelClientOptions: { apiKey: process.env.ANTHROPIC_API_KEY },
-    browserbaseSessionCreateParams: {
-      projectId: process.env.BROWSERBASE_PROJECT_ID,
-      browserSettings: {
-        // выбор ОС задаёт fingerprint
-        // верифицированный профиль = проходит через Cloudflare/Stytch
-        viewport: { width: 1366, height: 768 },
-      },
-      proxies: true,         // встроенные резидентные прокси
-      keepAlive: true,        // сессия живёт после закрытия Stagehand → можно вернуться
+    env: 'LOCAL',
+    localBrowserLaunchOptions: {
+      cdpUrl: `${steelSession.websocketUrl}&apiKey=${process.env.STEEL_API_KEY}`,
     },
-    browserbaseSessionID: browserbase_session_id, // если передан — реюзаем
+    enableCaching: false,
+    modelName: 'claude-sonnet-4-5-20250929',
+    modelClientOptions: { apiKey: process.env.ANTHROPIC_API_KEY },
   });
 
   await stagehand.init();
   if (url) await stagehand.page.goto(url, { waitUntil: 'domcontentloaded' });
 
   const sessionId = randomUUID();
-  SESSIONS.set(sessionId, { stagehand, createdAt: Date.now() });
+  SESSIONS.set(sessionId, { stagehand, steelSession, createdAt: Date.now() });
 
   return {
     session_id: sessionId,
-    browserbase_session_id: stagehand.browserbaseSessionID,
-    live_view_url: `https://www.browserbase.com/sessions/${stagehand.browserbaseSessionID}`,
+    steel_session_id: steelSession.id,
+    live_view_url: steelSession.sessionViewerUrl,
     current_url: stagehand.page.url(),
   };
 });
 
-// --- 2. Выполнить действие ---
+// --- 2. act ---
 fastify.post('/session/act', async (req) => {
   const { session_id, instruction } = req.body;
   const s = SESSIONS.get(session_id);
   if (!s) return { error: 'session_not_found' };
-
   try {
     const result = await s.stagehand.page.act(instruction);
-    return {
-      status: 'ok',
-      current_url: s.stagehand.page.url(),
-      result,
-    };
+    return { status: 'ok', current_url: s.stagehand.page.url(), result };
   } catch (err) {
     return { status: 'error', message: err.message, current_url: s.stagehand.page.url() };
   }
 });
 
-// --- 3. Извлечь данные ---
+// --- 3. extract ---
 fastify.post('/session/extract', async (req) => {
   const { session_id, instruction, schema } = req.body;
   const s = SESSIONS.get(session_id);
   if (!s) return { error: 'session_not_found' };
-
-  // schema приходит как JSON-описание; преобразуем в Zod
-  // для простоты поддержим только базовые поля
   const zodSchema = buildZodFromJson(schema);
-
   try {
     const data = await s.stagehand.page.extract({ instruction, schema: zodSchema });
     return { status: 'ok', data };
@@ -99,30 +99,27 @@ fastify.post('/session/extract', async (req) => {
   }
 });
 
-// --- 4. Наблюдать (что доступно на странице) ---
+// --- 4. observe ---
 fastify.post('/session/observe', async (req) => {
   const { session_id, instruction } = req.body;
   const s = SESSIONS.get(session_id);
   if (!s) return { error: 'session_not_found' };
-
   const observations = await s.stagehand.page.observe(instruction || undefined);
   return { status: 'ok', observations, current_url: s.stagehand.page.url() };
 });
 
-// --- 5. Закрыть ---
+// --- 5. close ---
 fastify.post('/session/close', async (req) => {
   const { session_id } = req.body;
   const s = SESSIONS.get(session_id);
   if (!s) return { error: 'session_not_found' };
-
-  await s.stagehand.close();
+  try { await s.stagehand.close(); } catch {}
+  try { await steel.sessions.release(s.steelSession.id); } catch {}
   SESSIONS.delete(session_id);
   return { status: 'closed' };
 });
 
-// Хелпер: простой JSON → Zod
 function buildZodFromJson(schemaJson) {
-  // schemaJson вид: { fields: [{ name: "title", type: "string" }, ...] }
   const shape = {};
   if (Array.isArray(schemaJson?.fields)) {
     for (const f of schemaJson.fields) {

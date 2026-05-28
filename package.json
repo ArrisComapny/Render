@@ -9,7 +9,7 @@
   "dependencies": {
     "@browserbasehq/stagehand": "^2.0.0",
     "@anthropic-ai/sdk": "^0.30.0",
-    "@playwright/test": "^1.48.0",
+    "steel-sdk": "^0.6.0",
     "playwright": "^1.48.0",
     "dotenv": "^16.4.5",
     "fastify": "^4.28.0",
